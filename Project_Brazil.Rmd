@@ -1,0 +1,687 @@
+---
+title: "Unequal Development of Brazil Municipalities" 
+author: "Regina Ooi"
+date: "3/3/2021"
+output: 
+  rmdformats::downcute:
+    code_folding: hide
+    toc_depth: 3
+  self_contained: true
+  thumbnails: true
+  lightbox: true
+  gallery: false
+  highlight: tango
+  df_print: paged
+---
+
+# Abstract
+
+This exploratory data analysis project aims to determine factors affecting the unequal development of Brazil at the municipality level. 
+
+The relationship between explanatory variables and GDP per capita is modelled by a multi-linear regression model, where some variables undergo transformation to better fit the model. To account for spatial autocorrelation between municipalities, Geographically Weighted Regression is adopted in formulating the linear model. 
+
+We find that the coefficient estimates for the explanatory variables remain statistically significant even in local linear models. 
+
+We observe a variation in residuals between municipalities of different sizes. The actual values of GDP per capita in large areas are more than the predicted values and the actual values of GDP per capita in small areas fall below the predicted values.
+
+In this project, we will utilize the data analysis tools and representations:
+1. Correlation Plots of all variables
+2. Histogram Plots of explanatory variables
+3. Multi-Linear Regression Model (Global and Local - Geographically Weighted Regression)
+4. Assumption Testing for the Linear Regression Models
+5. Choropleth Maps of GDP per capita, residuals and standard errors
+
+# Acknowledgements
+
+The data used was gathered by Professor Kam Tin Seong for academic purposes.
+
+```{r echo=TRUE, eval=FALSE, warning=FALSE, message=FALSE}
+packages = c('olsrr', 'corrplot', 'ggpubr', 'sf', 'spdep', 'GWmodel', 'tmap', 'tidyverse', 'geobr', 'fastDummies', 'EnvStats','kableExtra')
+for (p in packages){
+  if(!require(p, character.only = T)){
+    install.packages(p)
+  }
+  library(p,character.only = T)
+}
+```
+
+# Data
+
+## Aspatial Data Import
+
+We will be importing this data file containing the information for cities in Brazil.
+
+```{r echo=FALSE,warning=FALSE, message=FALSE}
+brazilcities <- read_csv2("data/aspatial/BRAZIL_CITIES.csv")
+
+kbl(brazilcities) %>%
+  kable_styling(bootstrap_options = c("striped", "hover", "condensed", "responsive"))
+```
+
+This data dictionary will allow us to understand the units of the variables in brazilcities
+
+```{r echo=FALSE, warning=FALSE, message=FALSE}
+datadict <- read_csv2("data/aspatial/Data_Dictionary.csv")
+datadict <- slice(datadict, 1:81)
+kbl(datadict) %>%
+  kable_styling(bootstrap_options = c("striped", "hover", "condensed", "responsive"))
+```
+
+## Geospatial Data Import
+
+We will be importing this data file containing the geospatial information for cities in Brazil.
+
+```{r echo=FALSE, warning=FALSE, message=FALSE}
+municipalities <- st_read(dsn = "data/muni_sf", layer = "muni_sf")
+
+# Checking the coordinate reference system for municipalities
+st_crs(municipalities)
+```
+
+## Aspatial Data Preparation
+
+```{r echo=FALSE, warning=FALSE, message=FALSE}
+# Checking for NA and duplicate values
+
+any(is.na(brazilcities))
+any(duplicated(brazilcities))
+
+brazilcities[rowSums(is.na(brazilcities))!=0,]
+```
+
+### Checking through the data types
+
+From the summary, we can see that some of the variables are in characters instead of numeric. We will need to change them by using as.numeric().
+
+```{r echo=FALSE, warning=FALSE, message=FALSE}
+summary(brazilcities)
+```
+
+```{r echo=FALSE, warning=FALSE, message=FALSE}
+brazilcities$IDHM_Educacao  <- as.numeric(brazilcities$IDHM_Educacao)
+brazilcities$IDHM_Longevidade <- as.numeric(brazilcities$IDHM_Longevidade)
+brazilcities$TAXES <- as.numeric(brazilcities$TAXES)
+brazilcities$GVA_AGROPEC <- as.numeric(brazilcities$GVA_AGROPEC)
+brazilcities$GVA_INDUSTRY  <- as.numeric(brazilcities$GVA_INDUSTRY)
+brazilcities$IDHM  <- as.numeric(brazilcities$IDHM)
+brazilcities$ALT  <- as.numeric(brazilcities$ALT)
+brazilcities$IDHM_Renda <- as.numeric(brazilcities$IDHM_Renda)
+```
+
+### Removing some variables
+
+Variables such as PU_Assets (Total amount of public bank assets) and MACS (Number of Mcdonalds) have NA values for many of the municipalities. With the NA values, it is difficult to make comparisons across municipalities to determine if they contribute to variations in GDP, so we will be removing them.
+
+### Extracting the selected columns from brazilcities
+
+Here, we will be extracting the necessary columns using select() from *dplyr* in *tidyverse* and creating binary columns from RURAL_URBAN using dummy_cols() from *fastDummies*.
+
+```{r echo=FALSE, warning=FALSE, message=FALSE}
+brazilcities_GDP <- brazilcities %>%
+ dplyr::select("CITY", "STATE", "CAPITAL", "LONG", "LAT", "GDP_CAPITA", "IBGE_15-59", "IDHM_Educacao", "IDHM_Longevidade", "IDHM_Renda", "AREA", "TAXES", "COMP_TOT", "RURAL_URBAN", "IBGE_RES_POP", "IBGE_POP", "IBGE_DU_URBAN", "IBGE_DU_RURAL", "IBGE_DU", "IBGE_PLANTED_AREA", "GVA_AGROPEC", "GVA_INDUSTRY", "GVA_SERVICES", "GVA_PUBLIC", "POP_GDP", "Cars", "Motorcycles", "PAY_TV", "FIXED_PHONES", "IBGE_RES_POP_BRAS") %>%
+  dummy_cols(select_columns = "RURAL_URBAN") %>%
+  mutate(`working_prop` = `IBGE_15-59`/`IBGE_POP`) %>%
+  mutate(`local_prop` = `IBGE_RES_POP_BRAS`/`IBGE_RES_POP`) %>%
+  mutate(`du_urban_prop` = `IBGE_DU_URBAN`/`IBGE_DU`) %>%
+  mutate(`pop_density` = `POP_GDP`/`AREA`) %>%
+  mutate(`planted_prop` = `IBGE_PLANTED_AREA`/`AREA`) %>%
+  mutate(`avg_tax` = `TAXES`/`IBGE_POP`) %>%
+  mutate(`agropec_percap` = `GVA_AGROPEC`/`POP_GDP`) %>%
+  mutate(`industry_percap` = `GVA_INDUSTRY`/`POP_GDP`) %>%
+  mutate(`services_percap` = `GVA_SERVICES`/`POP_GDP`) %>%
+  mutate(`public_percap` = `GVA_PUBLIC`/`POP_GDP`) %>%
+  mutate(`paytv_prop` = `PAY_TV`/`IBGE_POP`) %>%
+  mutate(`phones_prop` = `FIXED_PHONES`/`IBGE_POP`) %>%
+  mutate(`longitude` = (`LONG`/100000000)) %>%
+  mutate(`latitude` = (`LAT`/100000000)) %>%
+  rename("city" = "CITY", "state" = "STATE", "gdp_capita" = "GDP_CAPITA", "edu_hdi" = "IDHM_Educacao", "life_hdi" = "IDHM_Longevidade","gni_hdi" = "IDHM_Renda", "area" = "AREA", "intermediate_adjacent" = "RURAL_URBAN_Intermediário Adjacente", "intermediate_remote" = "RURAL_URBAN_Intermediário Remoto", "rural_adjacent" = "RURAL_URBAN_Rural Adjacente", "rural_remote" = "RURAL_URBAN_Rural Remoto", "urban" = "RURAL_URBAN_Urbano") %>%
+  dplyr::select(-"RURAL_URBAN", -"RURAL_URBAN_NA", -"IBGE_15-59", -"IBGE_RES_POP", -"RURAL_URBAN_Sem classificação", -"IBGE_DU_URBAN", - "IBGE_DU", -"IBGE_DU_RURAL", -"TAXES", -"COMP_TOT", -"POP_GDP", -"IBGE_PLANTED_AREA", -"LONG", -"LAT", -"PAY_TV", -"FIXED_PHONES", -"IBGE_RES_POP_BRAS", -"IBGE_POP",  -"GVA_AGROPEC", -"GVA_INDUSTRY", - "GVA_SERVICES", -"GVA_PUBLIC")
+```
+
+Looking at specific rows and columns with NA values
+
+```{r echo=FALSE, warning=FALSE, message=FALSE}
+brazilcities_GDP[rowSums(is.na(brazilcities_GDP))!=0,]
+```
+
+We will keep the observations with NA values for now, but we will create a copy with the NA values removed, so we can do a correlation plot later on.
+
+```{r echo=FALSE, warning=FALSE, message=FALSE}
+brazilcities_GDP_rm <- na.omit(brazilcities_GDP)
+```
+
+Projecting brazilcities_edited in the same projection system as municipalities, so that we can create a statistical point map later on.
+
+```{r echo=FALSE, warning=FALSE, message=FALSE}
+brazilcities.sf <- st_as_sf(brazilcities_GDP, coords = c("longitude", "latitude"), crs=4674)
+```
+
+## Joining Aspatial and Geospatial data
+
+```{r echo=FALSE, warning=FALSE, message=FALSE}
+brazilGDPdist <- left_join( municipalities,brazilcities_GDP, by = c( "name_mn" = "city"))
+```
+
+Checking through the data
+
+We will first look at the summary for brazilGDPdist to find out the range we should be setting for the choropleth map.
+
+```{r echo=FALSE, warning=FALSE, message=FALSE}
+summary(brazilGDPdist)
+```
+
+# Exploratory Data Analysis
+
+## GDP per capita Histogram
+
+The histogram shows a right skewed distribution which means that majority of the municipalities have low GDP per capita under 1 million.
+
+```{r echo=FALSE, warning=FALSE, message=FALSE}
+ggplot(data = brazilGDPdist, aes(x = gdp_capita)) +
+  geom_histogram(bins=20, color="black", fill="light blue")
+```
+
+## Interactive Map of GDP per capita
+
+```{r echo=FALSE, warning=FALSE, message=FALSE}
+tmap_mode("view")
+tm_basemap("OpenStreetMap") +
+  tm_shape(brazilGDPdist)+
+  tm_polygons("gdp_capita", title = "GDP per capita", breaks = c(0, 500000, 1000000, 1500000, 2000000, 2500000, 5000000, 10000000, Inf))
+```
+
+## Plotting the distribution of all variables using a histogram
+
+From the histograms, we observe that working_prop, edu_hdi and life_hdi seem to follow a normal distribution. For avg_tax, area, pop_density, planted_prop, company_psk, agropec_gvaprop, services_gvaprop and industry_gvaprop follow a right skewed distribution. The distribution of public_gvaprop is somewhat normal, with large values at both ends of the distribution.
+
+```{r echo=FALSE, warning=FALSE, message=FALSE}
+working_prop_h <- ggplot(data=brazilcities.sf, aes(x= working_prop)) + 
+  geom_histogram(bins=20, color="black", fill="light blue")
+
+local_prop_h <- ggplot(data=brazilcities.sf, aes(x= local_prop)) + 
+  geom_histogram(bins=20, color="black", fill="light blue")
+  
+edu_hdi_h <- ggplot(data=brazilcities.sf, aes(x= edu_hdi)) +
+  geom_histogram(bins=20, color="black", fill="light blue") 
+  
+life_hdi_h <- ggplot(data=brazilcities.sf, aes(x= life_hdi)) +
+  geom_histogram(bins=20, color="black", fill="light blue")
+
+gni_hdi_h <- ggplot(data=brazilcities.sf, aes(x= gni_hdi)) +
+  geom_histogram(bins=20, color="black", fill="light blue")
+  
+area_h <- ggplot(data=brazilcities.sf, aes(x= area)) +
+  geom_histogram(bins=20, color="black", fill="light blue")
+  
+avg_tax_h <- ggplot(data=brazilcities.sf, aes(x= avg_tax)) +
+  geom_histogram(bins=20, color="black", fill="light blue")
+
+pop_density_h <- ggplot(data=brazilcities.sf, aes(x= pop_density)) +
+  geom_histogram(bins=20, color="black", fill="light blue")
+
+du_urban_prop_h <- ggplot(data=brazilcities.sf, aes(x= du_urban_prop)) +
+  geom_histogram(bins=20, color="black", fill="light blue")
+
+planted_prop_h <- ggplot(data=brazilcities.sf, aes(x= planted_prop)) +
+  geom_histogram(bins=20, color="black", fill="light blue")
+
+paytv_prop_h <- ggplot(data=brazilcities.sf, aes(x= paytv_prop)) +
+  geom_histogram(bins=20, color="black", fill="light blue")
+
+phones_prop_h <- ggplot(data=brazilcities.sf, aes(x= phones_prop)) +
+  geom_histogram(bins=20, color="black", fill="light blue")
+
+agropec_percap_h <- ggplot(data=brazilcities.sf, aes(x= agropec_percap)) +
+  geom_histogram(bins=20, color="black", fill="light blue")
+
+industry_percap_h <- ggplot(data=brazilcities.sf, aes(x= industry_percap)) +
+  geom_histogram(bins=20, color="black", fill="light blue")
+
+public_percap_h <- ggplot(data=brazilcities.sf, aes(x= public_percap)) +
+  geom_histogram(bins=20, color="black", fill="light blue")
+
+services_percap_h <- ggplot(data=brazilcities.sf, aes(x= services_percap)) +
+  geom_histogram(bins=20, color="black", fill="light blue")
+
+intermediate_adjacent_h <- ggplot(data=brazilcities.sf, aes(x= intermediate_adjacent)) +
+  geom_bar(color="black", fill="light blue")
+
+intermediate_remote_h <- ggplot(data=brazilcities.sf, aes(x= intermediate_remote)) +
+  geom_bar(color="black", fill="light blue")
+
+rural_remote_h <- ggplot(data=brazilcities.sf, aes(x= rural_remote)) +
+  geom_bar(color="black", fill="light blue")
+
+rural_adjacent_h <- ggplot(data=brazilcities.sf, aes(x= rural_adjacent)) +
+  geom_bar(color="black", fill="light blue")
+
+urban_h <- ggplot(data=brazilcities.sf, aes(x= urban)) +
+  geom_bar(color="black", fill="light blue")
+
+ggarrange(working_prop_h,local_prop_h, edu_hdi_h, life_hdi_h, gni_hdi_h, area_h, avg_tax_h, pop_density_h, du_urban_prop_h, planted_prop_h, paytv_prop_h, phones_prop_h, agropec_percap_h, industry_percap_h, public_percap_h, services_percap_h, intermediate_adjacent_h, intermediate_remote_h, rural_adjacent_h, rural_remote_h, urban_h, ncol=2, nrow =2)
+```
+
+# Explanatory Multiple Linear Regression Model
+
+## Visualising variable relationships
+
+We will be using brazilcities_GDP_rm to conduct the visualization. As this is purely for visualization purposes and removing 10 observations will not skew the outcome for over 5000 observations, we will temporarily remove the NA values. When we conduct the analysis later on using regression models, we will use the full data frame with NA values.
+
+```{r echo=FALSE, warning=FALSE, message=FALSE}
+corrplot(cor(brazilcities_GDP_rm[, 4:25]), diag = FALSE, order = "AOE",
+         tl.pos = "td", tl.cex = 0.5, method = "number", type = "upper")
+```
+
+## Examining Linearity
+
+By examining the relationship between GDP per capita and each independent variable, we can identify any need for data transformation to fit it to a linear model.
+
+### Proportion of adults at working age (working_prop)
+
+```{r echo=FALSE, warning=FALSE, message=FALSE}
+ggplot(data = brazilcities.sf,  
+       aes(x = working_prop, y = gdp_capita)) +
+  geom_point() +
+  geom_smooth(method = lm)
+```
+
+### Proportion of local population (local_prop)
+
+```{r echo=FALSE, warning=FALSE, message=FALSE}
+ggplot(data = brazilcities.sf,  
+       aes(x = local_prop, y = gdp_capita)) +
+  geom_point() +
+  geom_smooth(method = lm)
+```
+
+### Proportion of planted area (planted_prop)
+
+```{r echo=FALSE, warning=FALSE, message=FALSE}
+ggplot(data = brazilcities.sf,  
+       aes(x = planted_prop, y = gdp_capita)) +
+  geom_point() +
+  geom_smooth(method = lm)
+```
+
+### Amount of Tax per person (avg_tax)
+
+```{r echo=FALSE, warning=FALSE, message=FALSE}
+ggplot(data = brazilcities.sf,  
+       aes(x = avg_tax, y = gdp_capita)) +
+  geom_point() +
+  geom_smooth(method = lm)
+```
+
+### Gross Added Value of Industry proportion (industry_prop)
+
+```{r echo=FALSE, warning=FALSE, message=FALSE}
+ggplot(data = brazilcities.sf,  
+       aes(x = industry_prop, y = gdp_capita)) +
+  geom_point() +
+  geom_smooth(method = lm)
+```
+
+### Gross Added Value of Services proportion (services_prop)
+
+```{r echo=FALSE, warning=FALSE, message=FALSE}
+ggplot(data = brazilcities.sf,  
+       aes(x = services_prop, y = gdp_capita)) +
+  geom_point() +
+  geom_smooth(method = lm)
+```
+
+### Gross Added Value of Public proportion (public_prop)
+
+```{r echo=FALSE, warning=FALSE, message=FALSE}
+ggplot(data = brazilcities.sf,  
+       aes(x = public_prop, y = gdp_capita)) +
+  geom_point() +
+  geom_smooth(method = lm)
+```
+
+### Gross Added Value of Agropec proportion (agropec_prop)
+
+```{r echo=FALSE, warning=FALSE, message=FALSE}
+ggplot(data = brazilcities.sf,  
+       aes(x = agropec_prop, y = gdp_capita)) +
+  geom_point() +
+  geom_smooth(method = lm)
+```
+
+### Area (area)
+
+```{r echo=FALSE, warning=FALSE, message=FALSE}
+ggplot(data = brazilcities.sf,  
+       aes(x = area, y = gdp_capita)) +
+  geom_point() +
+  geom_smooth(method = lm)
+```
+
+### Population Density (pop_density)
+
+Looking at the scatterplot of population density, it is likely that it does not have a linear relationship with GDP per capita.
+
+```{r echo=FALSE, warning=FALSE, message=FALSE}
+ggplot(data = brazilcities.sf,  
+       aes(x = pop_density, y = gdp_capita)) +
+  geom_point() +
+  geom_smooth(method = lm)
+```
+
+Hence, we can perform log transformation on population density, producing data points that share a linear relationship with GDP per capita, with a few outliers.
+
+```{r echo=FALSE, warning=FALSE, message=FALSE}
+ggplot(data = brazilcities.sf,  
+       aes(x = log(pop_density), y = gdp_capita)) +
+  geom_point() +
+  geom_smooth(method = lm)
+```
+
+## Multi-linear regression model
+
+We will be using back brazilcities.sf, a data frame that does not omit the NA values.
+
+**t-test hypotheses**
+
+t-test Null Hypothesis: The coefficient estimate is zero.
+t-test Alternative Hypothesis: The coefficient estimate is not zero.
+
+F-test Null Hypothesis: The variation explained by the model is due to chance.
+F-test Alternative Hypothesis: The variation explained by the model is not due to chance.
+
+This test is conducted at 5% significance level. The alpha value is at 0.05.
+
+### Multiple linear regression model without transformation
+
+```{r echo=FALSE, warning=FALSE, message=FALSE}
+brazilcities.mlr <- lm(formula = gdp_capita ~  area + working_prop + local_prop + life_hdi + industry_percap + services_percap + public_percap + agropec_percap + planted_prop + pop_density + avg_tax + intermediate_adjacent + intermediate_remote + rural_adjacent + rural_remote + urban, data = brazilcities.sf)
+summary(brazilcities.mlr)
+```
+
+**Analysis**
+
+Looking at the adjusted R-square, this multiple linear regression model is able to account for 70.88% of the observations for the dependent variable, GDP per capita.
+
+For Pr(>|t|) values smaller than 0.05, the null hypothesis is rejected. This means that the coefficent estimates for working_prop, life_hdi, industry_percap, services_percap, public_percap, agropec_percap, planted_prop, avg_tax.
+
+### Multi-linear regression model (with transformation)
+
+```{r echo=FALSE, warning=FALSE, message=FALSE}
+brazilcities.mlr_log <- lm(formula = gdp_capita ~  area + working_prop + local_prop + life_hdi + industry_percap + services_percap + public_percap + agropec_percap + planted_prop + log(pop_density) + avg_tax + intermediate_adjacent + intermediate_remote + rural_adjacent + rural_remote + urban, data = brazilcities.sf)
+summary(brazilcities.mlr_log)
+```
+
+**Analysis**
+
+Looking at the adjusted R-square, this multiple linear regression model is able to account for 70.94% of the observations for the dependent variable, GDP per capita. This model fits better compared to the previous model without log transformations.
+
+The F-statistic is large at 954.3 and it leads us to reject the null hypothesis as a large F-statistic indicate that the t^2^ statistic is large and significant. We conclude that the variation explained by the model is not due to chance.
+
+We will only reject all the rural-urban binary variables with t-values that are not statistically significant, except for rural_adjacent. This may mean that whether an area is rural and adjacent affects the GDP per pcapita, compare to other areas.
+
+We will retain the independent variables pop_density, working_prop, industry_percap, services_percap, public_percap, agropec_percap, avg_tax, rural_adjacent and planted_prop. These explanatory variables are good for accounting of the observations in GDP per capita.
+
+### Revised Multiple Linear Regression Model
+
+We will be using ols_regress from oslrr() to check for goodness of fit of the linear model. We will be using this instead of summary() as summary() is convenient for checking of statistical significance in t-values and ols_regress() has a model summary that makes it convenient for checking for goodness of fit.
+
+```{r echo=FALSE, warning=FALSE, message=FALSE}
+brazilcities.mlr1 <- lm(formula = gdp_capita ~   working_prop + industry_percap + services_percap + public_percap + agropec_percap + planted_prop + log(pop_density) + avg_tax + rural_adjacent, data = brazilcities.sf)
+ols_regress(brazilcities.mlr1)
+```
+
+**Analysis**
+
+Consistent with the results from the previous model, the adjusted R-square is at 0.706, which means that this multiple linear regression model is able to account for 70.6% of the observations for the dependent variable, GDP per capita.
+
+The F-statistic is a large value of 1487.974, which leads us to reject the null hypothesis as a large F-statistic indicate that the t^2^ statistic is large and significant. We conclude that the variation explained by the model is not due to chance.
+
+### Checking for multicollinearity
+
+We will be checking the VIF values to detect whether there are redundant explanatory variables correlated with one another. If the VIF value is above 8, it shows signs of correlation. It the VIF value is above 10, this shows a strong sign of multicollinearity.
+
+```{r echo=FALSE, warning=FALSE, message=FALSE}
+ols_vif_tol(brazilcities.mlr1)
+```
+
+**Analysis**
+
+As all the VIF values fall below 8, there is no sign of correlation. We can proceed to test the assumptions for this model.
+
+## Testing assumptions for multi-linear regression model
+
+We will not be conducting serial autocorrelation as we do not know the order which the GDP per capita information is collected for each municipality. Hence we will not be able to test for a time series effect on the residuals.
+
+### Linearity Assumption
+
+While we conducted the EDA previously to identify any non-linear relationships between the dependent and independent variables, it is not sufficient for us to assume linearity between variables. We will be plotting the residuals against the fitted values to check for linearity.
+
+```{r echo=FALSE, warning=FALSE, message=FALSE}
+ols_plot_resid_fit(brazilcities.mlr1)
+```
+
+**Analysis**
+
+Most of the residuals bounce randomly around the 0 line. This suggests that the assumption that the relationship is linear is reasonable.
+
+Most of the residuals roughly form a horizontal band around the 0 line. This suggests that the variances of the error terms are equal.
+
+However, some residuals share a negative linear relationship with the fitted value. These values can cancel off other positive residual outliers.
+
+The linearity assumption generally applies here.
+
+### Normality Assumption 
+
+We will be testing on the residuals, to check if its distribution resemble that of a normal distribution. If it follows a normal distribution, the expected mean error of the regression model is zero.
+
+```{r echo=FALSE, warning=FALSE, message=FALSE}
+ols_plot_resid_hist(brazilcities.mlr1)
+```
+
+**Analysis**
+
+The plot shows that the residual of the multiple linear regression model resembles normal distribution.
+
+### Absence of Heteroskedasticity Assumption
+
+We will be using the [Breusch Pagan test](https://www.rdocumentation.org/packages/olsrr/versions/0.5.3/topics/ols_test_breusch_pagan) from *olsrr* package.
+
+This assumption should not be valid for a linear regression model, as the residuals should not vary with x. This means that the variance have to be constant in a linear regression model. 
+
+This is tested at 5% significance level. 
+
+```{r echo=FALSE, warning=FALSE, message=FALSE}
+ols_test_breusch_pagan(brazilcities.mlr1)
+```
+
+**Analysis**
+
+Since the Prob >Chi2 value is below 0.05, we do not reject the null hypothesis. The multiple linear regression model has a constant variance. The fitted nmodel is not biased to underlying sub-factors.
+
+### Testing for Spatial Autocorrelation 
+
+We will export the residual from the multiple linear regression model and save it as a data frame.
+
+```{r echo=FALSE, warning=FALSE, message=FALSE}
+mlr.output <- as.data.frame(brazilcities.mlr1$residuals)
+```
+
+We will then join the newly created data frame with brazilcities.sf object. However, before doing joining, we will remove some variables to match the number of observations in the multiple linear regression model.
+
+```{r echo=FALSE, warning=FALSE, message=FALSE}
+brazilcities.sf.rm <- brazilcities.sf %>%
+  dplyr::select(-edu_hdi, -life_hdi, -gni_hdi, -Cars, -Motorcycles, -intermediate_adjacent, - intermediate_remote, -local_prop, -rural_remote, -urban, -du_urban_prop, paytv_prop, phones_prop, -area) %>%
+  mutate(`log(pop_density)` = log(`pop_density`)) %>%
+  na.omit()
+```
+
+```{r echo=FALSE, warning=FALSE, message=FALSE}
+brazilcities.res.sf <- cbind(brazilcities.sf.rm, 
+                        brazilcities.mlr1$residuals) %>%
+rename(`MLR_RES` = `brazilcities.mlr1.residuals`)
+```
+
+We will convert brazilcities.res.sf simple feature object into a SpatialPointsDataFrame because spdep package can only process sp conformed spatial data objects.
+
+```{r echo=FALSE, warning=FALSE, message=FALSE}
+brazilcities.sp <- as_Spatial(brazilcities.res.sf)
+brazilcities.sp
+```
+
+## Distribution of Residuals
+
+```{r echo=FALSE, warning=FALSE, message=FALSE}
+brazilcities.res <- st_set_geometry(brazilcities.res.sf, NULL)
+brazilcities.pol <- left_join(municipalities, brazilcities.res, by = c("name_mn" = "city"))
+```
+
+```{r echo=FALSE, warning=FALSE, message=FALSE}
+tm_shape(municipalities) + 
+  tm_borders(alpha=0.5) +
+tm_shape(brazilcities.pol)+
+  tm_polygons(col = "MLR_RES", title="Resiuals", n=8, style= "quantile")
+```
+
+The spatial patterns indicate areas of over-prediction and under-prediction. Spatial autocorrelation may be present here.
+
+# Explanatory model using Geographically Weighted Regression
+
+Geographically weighted regression (GWR) is a spatial analysis technique that takes non-stationary variables into consideration (e.g., climate; demographic factors; physical environment characteristics). Since a municipality's GDP per capita can be affected by adjacent municipalities, we have to take spatial variables into account.
+
+## Fixed Bandwith Geographically Weighted Model
+
+```{r echo=FALSE, warning=FALSE, message=FALSE}
+# Computing the fixed bandwidth
+bw.fixed <- bw.gwr(formula = gdp_capita ~   working_prop + industry_percap + services_percap + public_percap + agropec_percap + planted_prop + log(pop_density) + avg_tax + rural_adjacent, data = brazilcities.sp, approach="CV", kernel="gaussian", adaptive=FALSE, longlat=FALSE)
+
+gwr.fixed <- gwr.basic(formula = gdp_capita ~   working_prop + industry_percap + services_percap + public_percap + agropec_percap + planted_prop + log(pop_density) + avg_tax + rural_adjacent, data = brazilcities.sp, bw=bw.fixed, kernel = 'gaussian', longlat = FALSE)
+
+gwr.fixed
+```
+
+The result shows that the recommended bandwidth is 112.8878. This means that municipalities that fall under 112.8878km of proximity from other municipalities will be considered as neighbours.
+
+### Visualising Output from the Geographically Weighted Regresson Model
+
+The outputs of the GWR model include Local R2, Predicted values, Residuals and Coefficient Standard Error.
+
+```{r echo=FALSE, warning=FALSE, message=FALSE}
+brazilcities.sf.fixed <- st_as_sf(gwr.fixed$SDF) %>%
+  st_transform(crs=4674)
+gwr.fixed.output <- as.data.frame(gwr.fixed$SDF)
+brazilcities.sf.fixed <- cbind(brazilcities.res.sf, as.matrix(gwr.fixed.output))
+brazilcities.sf.fixed
+```
+
+```{r echo=FALSE, warning=FALSE, message=FALSE}
+brazilcities.sf.fixed <- st_set_geometry(brazilcities.sf.fixed, NULL)
+brazilcities.pol.gwr<- left_join(municipalities, brazilcities.sf.fixed, by = c("name_mn" = "city"))
+```
+
+## Distribution of Residuals (Multi-linear model with GWR)
+
+Residuals are the differences between the fitted y values and the observed y values. 
+
+```{r echo=FALSE, warning=FALSE, message=FALSE}
+tm_shape(municipalities) + 
+  tm_borders(alpha=0.5) +
+tm_shape(brazilcities.pol.gwr)+
+  tm_polygons(col = "MLR_RES", n=8, style= "quantile")
+```
+
+**Analysis**
+
+There is a mix of positive and negative residual values throughout Brazil, with a large proportion of municipalities having residuals of large maginitude (both positive and negative). Larger areas tend to have large values of positive residuals (green) and smaller areas tend to have large values of negative residuals (orange). This means that the actual values of GDP per capita in large areas are more than the predicted values and the actual values of GDP per capita in small areas are less than the predicted values.
+
+The fitted values differ largely from the observed values for most of the municipalities. Only a small proportion of municipalities have residuals in yellow, indicating small differences between the fitted and observed values of GDP per capita.
+
+## Choropleth Map for Distribution of Local R2
+
+The local R2 values range between 0.0 and 1.0 and they indicate how well the local regression model fits observed GDP per capita values. If the municipality has a low local R2 value, it means that the local model is performing poorly and does not fit the observed GDP per Capita values well.
+
+```{r echo=FALSE, warning=FALSE, message=FALSE}
+tm_shape(municipalities) + 
+  tm_borders(alpha=0.5) +
+tm_shape(brazilcities.pol.gwr)+
+  tm_polygons(col = "Local_R2", n=8, style= "jenks")
+```
+
+**Analysis**
+
+For all municipalities, they have local R2 values greater than 0.7043, which means that their local models can account for at least 70.43% of the observed GDP per capita values. Municipalities in the upper middle regions have higher local R2 values and have better fitting GWR models.
+
+## Choropleth Maps for Distribution of Coefficient Standard Error for all Explanatory Variables
+
+Coefficient Standard Error measure the reliability of each coefficient estimate. We want the coefficients of standard errors to be small. Large coefficients may mean that there are problems with local collinearity.
+
+### Coefficient Standard Error for Average tax
+
+```{r echo=FALSE, warning=FALSE, message=FALSE}
+tm_shape(municipalities) + 
+  tm_borders(alpha=0.5) +
+tm_shape(brazilcities.pol.gwr)+
+  tm_polygons(col = "avg_tax_SE", n=8, style= "jenks")
+```
+
+### Coefficient Standard Error for log Population density
+
+```{r echo=FALSE, warning=FALSE, message=FALSE}
+tm_shape(municipalities) + 
+  tm_borders(alpha=0.5) +
+tm_shape(brazilcities.pol.gwr)+
+  tm_polygons(col = "log.pop_density._SE", n=8, style= "jenks", palette = "Purples")
+```
+
+### Coefficient Standard Error for rural adjacent municipalities
+
+```{r echo=FALSE, warning=FALSE, message=FALSE}
+tm_shape(municipalities) + 
+  tm_borders(alpha=0.5) +
+tm_shape(brazilcities.pol.gwr)+
+  tm_polygons(col = "rural_adjacent_SE", n=8, style= "jenks", palette ="Reds")
+```
+
+### Coefficient Standard Error for Industry Gross Value Added per capita
+
+```{r echo=FALSE, warning=FALSE, message=FALSE}
+tm_shape(municipalities) + 
+  tm_borders(alpha=0.5) +
+tm_shape(brazilcities.pol.gwr)+
+  tm_polygons(col = "industry_percap_SE", n=8, style= "jenks", palette = "Blues")
+```
+
+### Coefficient Standard Error for Services Gross Value Added per capita
+
+```{r echo=FALSE, warning=FALSE, message=FALSE}
+tm_shape(municipalities) + 
+  tm_borders(alpha=0.5) +
+tm_shape(brazilcities.pol.gwr)+
+  tm_polygons(col = "services_percap_SE", n=8, style= "jenks", palette = "Blues")
+```
+
+### Coefficient Standard Error for Public Gross Value Added per capita
+
+```{r echo=FALSE, warning=FALSE, message=FALSE}
+tm_shape(municipalities) + 
+  tm_borders(alpha=0.5) +
+tm_shape(brazilcities.pol.gwr)+
+  tm_polygons(col = "public_percap_SE", n=8, style= "jenks", palette = "Blues")
+```
+
+### Coefficient Standard Error for Agropec Gross Value Added per capita
+
+```{r echo=FALSE, warning=FALSE, message=FALSE}
+tm_shape(municipalities) + 
+  tm_borders(alpha=0.5) +
+tm_shape(brazilcities.pol.gwr)+
+  tm_polygons(col = "agropec_percap_SE", n=8, style= "jenks", palette = "Blues")
+```
+
+### Coefficient Standard Error for Proportion of Planted Area
+
+```{r echo=FALSE, warning=FALSE, message=FALSE}
+tm_shape(municipalities) + 
+  tm_borders(alpha=0.5) +
+tm_shape(brazilcities.pol.gwr)+
+  tm_polygons(col = "planted_prop_SE", n=8, style= "jenks", palette = "Greens")
+```
