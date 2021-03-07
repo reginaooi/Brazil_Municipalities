@@ -16,4 +16,5 @@ In this project, we will utilize the data analysis tools and representations:
 5. Choropleth Maps of GDP per capita, residuals and standard errors
 
 **View the project [here](https://reginaooi.github.io/Brazil_Municipalities/Brazil.html)**
-**View the additional plots [here](**View the project [here](https://reginaooi.github.io/Brazil_Municipalities/Brazil.html)**
+
+**View the additional plots [here](https://reginaooi.github.io/Brazil_Municipalities/Brazil.html)**
