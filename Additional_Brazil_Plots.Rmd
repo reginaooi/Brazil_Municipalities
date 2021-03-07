@@ -1,0 +1,353 @@
+---
+title: "Additional Brazil Plots"
+author: "Regina Ooi"
+date: "06/03/2021"
+output:
+  rmdformats::downcute:
+    code_folding: hide
+    toc_depth: 3
+  self_contained: true
+  thumbnails: true
+  lightbox: true
+  gallery: false
+  highlight: tango
+  df_print: paged
+---
+
+```{r echo=FALSE,  warning=FALSE, message=FALSE}
+packages = c('olsrr', 'corrplot', 'ggpubr', 'sf', 'spdep', 'GWmodel', 'tmap', 'tidyverse', 'geobr', 'fastDummies', 'EnvStats', 'rmdformats', 'DT')
+for (p in packages){
+  if(!require(p, character.only = T)){
+    install.packages(p)
+  }
+  library(p,character.only = T)
+}
+```
+
+# Data and Environment Setup
+
+```{r echo=TRUE, warning=FALSE, message=FALSE}
+# Data
+
+brazilcities <- readr::read_csv2("data/aspatial/BRAZIL_CITIES.csv")
+municipalities <- st_read(dsn = "data/muni_sf", layer = "muni_sf")
+
+brazilcities$IDHM_Educacao  <- as.numeric(brazilcities$IDHM_Educacao)
+brazilcities$IDHM_Longevidade <- as.numeric(brazilcities$IDHM_Longevidade)
+brazilcities$TAXES <- as.numeric(brazilcities$TAXES)
+brazilcities$GVA_AGROPEC <- as.numeric(brazilcities$GVA_AGROPEC)
+brazilcities$GVA_INDUSTRY  <- as.numeric(brazilcities$GVA_INDUSTRY)
+brazilcities$IDHM  <- as.numeric(brazilcities$IDHM)
+brazilcities$ALT  <- as.numeric(brazilcities$ALT)
+brazilcities$IDHM_Renda <- as.numeric(brazilcities$IDHM_Renda)
+
+library(dplyr)
+brazilcities_GDP <- brazilcities %>%
+ dplyr::select("CITY", "STATE", "CAPITAL", "LONG", "LAT", "GDP_CAPITA", "IBGE_15-59", "IDHM_Educacao", "IDHM_Longevidade", "IDHM_Renda", "AREA", "TAXES", "COMP_TOT", "RURAL_URBAN", "IBGE_RES_POP", "IBGE_POP", "IBGE_DU_URBAN", "IBGE_DU_RURAL", "IBGE_DU", "IBGE_PLANTED_AREA", "GVA_AGROPEC", "GVA_INDUSTRY", "GVA_SERVICES", "GVA_PUBLIC", "POP_GDP", "Cars", "Motorcycles", "PAY_TV", "FIXED_PHONES", "IBGE_RES_POP_BRAS") %>%
+  dummy_cols(select_columns = "RURAL_URBAN") %>%
+  dplyr::mutate(`working_prop` = `IBGE_15-59`/`IBGE_POP`) %>%
+  mutate(`local_prop` = `IBGE_RES_POP_BRAS`/`IBGE_RES_POP`) %>%
+  mutate(`du_urban_prop` = `IBGE_DU_URBAN`/`IBGE_DU`) %>%
+  mutate(`pop_density` = `POP_GDP`/`AREA`) %>%
+  mutate(`planted_prop` = `IBGE_PLANTED_AREA`/`AREA`) %>%
+  mutate(`avg_tax` = `TAXES`/`IBGE_POP`) %>%
+  mutate(`agropec_percap` = `GVA_AGROPEC`/`POP_GDP`) %>%
+  mutate(`industry_percap` = `GVA_INDUSTRY`/`POP_GDP`) %>%
+  mutate(`services_percap` = `GVA_SERVICES`/`POP_GDP`) %>%
+  mutate(`public_percap` = `GVA_PUBLIC`/`POP_GDP`) %>%
+  mutate(`paytv_prop` = `PAY_TV`/`IBGE_POP`) %>%
+  mutate(`phones_prop` = `FIXED_PHONES`/`IBGE_POP`) %>%
+  mutate(`longitude` = (`LONG`/100000000)) %>%
+  mutate(`latitude` = (`LAT`/100000000)) %>%
+  rename("city" = "CITY", "state" = "STATE", "gdp_capita" = "GDP_CAPITA", "edu_hdi" = "IDHM_Educacao", "life_hdi" = "IDHM_Longevidade","gni_hdi" = "IDHM_Renda", "area" = "AREA", "intermediate_adjacent" = "RURAL_URBAN_Intermediário Adjacente", "intermediate_remote" = "RURAL_URBAN_Intermediário Remoto", "rural_adjacent" = "RURAL_URBAN_Rural Adjacente", "rural_remote" = "RURAL_URBAN_Rural Remoto", "urban" = "RURAL_URBAN_Urbano") %>%
+  dplyr::select(-"RURAL_URBAN", -"RURAL_URBAN_NA", -"IBGE_15-59", -"IBGE_RES_POP", -"RURAL_URBAN_Sem classificação", -"IBGE_DU_URBAN", - "IBGE_DU", -"IBGE_DU_RURAL", -"TAXES", -"COMP_TOT", -"POP_GDP", -"IBGE_PLANTED_AREA", -"LONG", -"LAT", -"PAY_TV", -"FIXED_PHONES", -"IBGE_RES_POP_BRAS", -"IBGE_POP",  -"GVA_AGROPEC", -"GVA_INDUSTRY", - "GVA_SERVICES", -"GVA_PUBLIC")
+
+library(sf)
+
+brazilcities.sf <- st_as_sf(brazilcities_GDP, coords = c("longitude", "latitude"), crs=4674)
+```
+
+```{r echo=TRUE, warning=FALSE, message=FALSE}
+# GWR model
+
+brazilcities.sf.rm <- brazilcities.sf %>%
+  dplyr::select(-edu_hdi, -life_hdi, -gni_hdi, -Cars, -Motorcycles, -intermediate_adjacent, - intermediate_remote, -local_prop, -rural_remote, -urban, -du_urban_prop, paytv_prop, phones_prop, -area) %>%
+  mutate(`log(pop_density)` = log(`pop_density`)) %>%
+  na.omit()
+
+brazilcities.mlr1 <- lm(formula = gdp_capita ~   working_prop + industry_percap + services_percap + public_percap + agropec_percap + planted_prop + log(pop_density) + avg_tax + rural_adjacent, data = brazilcities.sf)
+
+brazilcities.res.sf <- cbind(brazilcities.sf.rm, 
+                        brazilcities.mlr1$residuals) %>%
+rename(`MLR_RES` = `brazilcities.mlr1.residuals`)
+
+# We will convert brazilcities.res.sf simple feature object into a SpatialPointsDataFrame because spdep package can only process sp conformed spatial data objects.
+
+brazilcities.sp <- as_Spatial(brazilcities.res.sf)
+brazilcities.sp
+
+bw.fixed <- bw.gwr(formula = gdp_capita ~   working_prop + industry_percap + services_percap + public_percap + agropec_percap + planted_prop + log(pop_density) + avg_tax + rural_adjacent, data = brazilcities.sp, approach="CV", kernel="gaussian", adaptive=FALSE, longlat=FALSE)
+
+gwr.fixed <- gwr.basic(formula = gdp_capita ~   working_prop + industry_percap + services_percap + public_percap + agropec_percap + planted_prop + log(pop_density) + avg_tax + rural_adjacent, data = brazilcities.sp, bw=bw.fixed, kernel = 'gaussian', longlat = FALSE)
+
+brazilcities.sf.fixed <- st_as_sf(gwr.fixed$SDF) %>%
+  st_transform(crs=4674)
+gwr.fixed.output <- as.data.frame(gwr.fixed$SDF)
+brazilcities.sf.fixed <- cbind(brazilcities.res.sf, as.matrix(gwr.fixed.output))
+
+brazilcities.sf.fixed <- st_set_geometry(brazilcities.sf.fixed, NULL)
+brazilcities.pol.gwr<- left_join(municipalities, brazilcities.sf.fixed, by = c("name_mn" = "city"))
+```
+
+# Histogram of all variables
+
+From the histograms, we observe that working_prop, edu_hdi and life_hdi seem to follow a normal distribution. For avg_tax, area, pop_density, planted_prop, company_psk, agropec_gvaprop, services_gvaprop and industry_gvaprop follow a right skewed distribution. The distribution of public_gvaprop is somewhat normal, with large values at both ends of the distribution. View here
+
+```{r echo=TRUE, warning=FALSE, message=FALSE}
+
+working_prop_h <- ggplot(data=brazilcities.sf, aes(x= working_prop)) + 
+  geom_histogram(bins=20, color="black", fill="light blue")
+
+local_prop_h <- ggplot(data=brazilcities.sf, aes(x= local_prop)) + 
+  geom_histogram(bins=20, color="black", fill="light blue")
+  
+edu_hdi_h <- ggplot(data=brazilcities.sf, aes(x= edu_hdi)) +
+  geom_histogram(bins=20, color="black", fill="light blue") 
+  
+life_hdi_h <- ggplot(data=brazilcities.sf, aes(x= life_hdi)) +
+  geom_histogram(bins=20, color="black", fill="light blue")
+
+gni_hdi_h <- ggplot(data=brazilcities.sf, aes(x= gni_hdi)) +
+  geom_histogram(bins=20, color="black", fill="light blue")
+  
+area_h <- ggplot(data=brazilcities.sf, aes(x= area)) +
+  geom_histogram(bins=20, color="black", fill="light blue")
+  
+avg_tax_h <- ggplot(data=brazilcities.sf, aes(x= avg_tax)) +
+  geom_histogram(bins=20, color="black", fill="light blue")
+
+pop_density_h <- ggplot(data=brazilcities.sf, aes(x= pop_density)) +
+  geom_histogram(bins=20, color="black", fill="light blue")
+
+du_urban_prop_h <- ggplot(data=brazilcities.sf, aes(x= du_urban_prop)) +
+  geom_histogram(bins=20, color="black", fill="light blue")
+
+planted_prop_h <- ggplot(data=brazilcities.sf, aes(x= planted_prop)) +
+  geom_histogram(bins=20, color="black", fill="light blue")
+
+paytv_prop_h <- ggplot(data=brazilcities.sf, aes(x= paytv_prop)) +
+  geom_histogram(bins=20, color="black", fill="light blue")
+
+phones_prop_h <- ggplot(data=brazilcities.sf, aes(x= phones_prop)) +
+  geom_histogram(bins=20, color="black", fill="light blue")
+
+agropec_percap_h <- ggplot(data=brazilcities.sf, aes(x= agropec_percap)) +
+  geom_histogram(bins=20, color="black", fill="light blue")
+
+industry_percap_h <- ggplot(data=brazilcities.sf, aes(x= industry_percap)) +
+  geom_histogram(bins=20, color="black", fill="light blue")
+
+public_percap_h <- ggplot(data=brazilcities.sf, aes(x= public_percap)) +
+  geom_histogram(bins=20, color="black", fill="light blue")
+
+services_percap_h <- ggplot(data=brazilcities.sf, aes(x= services_percap)) +
+  geom_histogram(bins=20, color="black", fill="light blue")
+
+intermediate_adjacent_h <- ggplot(data=brazilcities.sf, aes(x= intermediate_adjacent)) +
+  geom_bar(color="black", fill="light blue")
+
+intermediate_remote_h <- ggplot(data=brazilcities.sf, aes(x= intermediate_remote)) +
+  geom_bar(color="black", fill="light blue")
+
+rural_remote_h <- ggplot(data=brazilcities.sf, aes(x= rural_remote)) +
+  geom_bar(color="black", fill="light blue")
+
+rural_adjacent_h <- ggplot(data=brazilcities.sf, aes(x= rural_adjacent)) +
+  geom_bar(color="black", fill="light blue")
+
+urban_h <- ggplot(data=brazilcities.sf, aes(x= urban)) +
+  geom_bar(color="black", fill="light blue")
+
+ggarrange(working_prop_h,local_prop_h, edu_hdi_h, life_hdi_h, gni_hdi_h, area_h, avg_tax_h, pop_density_h, du_urban_prop_h, planted_prop_h, paytv_prop_h, phones_prop_h, agropec_percap_h, industry_percap_h, public_percap_h, services_percap_h, intermediate_adjacent_h, intermediate_remote_h, rural_adjacent_h, rural_remote_h, urban_h, ncol=2, nrow =2)
+```
+
+# Examining Linearity
+
+By examining the relationship between GDP per capita and each independent variable, we can identify any need for data transformation to fit it to a linear model.
+
+## Proportion of adults at working age (working_prop)
+
+```{r echo=TRUE, warning=FALSE, message=FALSE}
+ggplot(data = brazilcities.sf,  
+       aes(x = working_prop, y = gdp_capita)) +
+  geom_point() +
+  geom_smooth(method = lm)
+```
+
+## Proportion of local population (local_prop)
+
+```{r echo=TRUE, warning=FALSE, message=FALSE}
+ggplot(data = brazilcities.sf,  
+       aes(x = local_prop, y = gdp_capita)) +
+  geom_point() +
+  geom_smooth(method = lm)
+```
+
+## Proportion of planted area (planted_prop)
+
+```{r echo=TRUE, warning=FALSE, message=FALSE}
+ggplot(data = brazilcities.sf,  
+       aes(x = planted_prop, y = gdp_capita)) +
+  geom_point() +
+  geom_smooth(method = lm)
+```
+
+## Amount of Tax per person (avg_tax)
+
+```{r echo=TRUE, warning=FALSE, message=FALSE}
+ggplot(data = brazilcities.sf,  
+       aes(x = avg_tax, y = gdp_capita)) +
+  geom_point() +
+  geom_smooth(method = lm)
+```
+
+## Gross Added Value of Industry proportion (industry_prop)
+
+```{r echo=TRUE, warning=FALSE, message=FALSE}
+ggplot(data = brazilcities.sf,  
+       aes(x = industry_percap, y = gdp_capita)) +
+  geom_point() +
+  geom_smooth(method = lm)
+```
+
+## Gross Added Value of Services proportion (services_prop)
+
+```{r echo=TRUE, warning=FALSE, message=FALSE}
+ggplot(data = brazilcities.sf,  
+       aes(x = services_percap, y = gdp_capita)) +
+  geom_point() +
+  geom_smooth(method = lm)
+```
+
+## Gross Added Value of Public proportion (public_prop)
+
+```{r echo=TRUE, warning=FALSE, message=FALSE}
+ggplot(data = brazilcities.sf,  
+       aes(x = public_percap, y = gdp_capita)) +
+  geom_point() +
+  geom_smooth(method = lm)
+```
+
+## Gross Added Value of Agropec proportion (agropec_prop)
+
+```{r echo=TRUE, warning=FALSE, message=FALSE}
+ggplot(data = brazilcities.sf,  
+       aes(x = agropec_percap, y = gdp_capita)) +
+  geom_point() +
+  geom_smooth(method = lm)
+```
+
+## Area (area)
+
+```{r echo=TRUE, warning=FALSE, message=FALSE}
+ggplot(data = brazilcities.sf,  
+       aes(x = area, y = gdp_capita)) +
+  geom_point() +
+  geom_smooth(method = lm)
+```
+
+## Population Density (pop_density)
+
+Looking at the scatterplot of population density, it is likely that it does not have a linear relationship with GDP per capita.
+
+```{r echo=TRUE, warning=FALSE, message=FALSE}
+ggplot(data = brazilcities.sf,  
+       aes(x = pop_density, y = gdp_capita)) +
+  geom_point() +
+  geom_smooth(method = lm)
+```
+
+Hence, we can perform log transformation on population density, producing data points that share a linear relationship with GDP per capita, with a few outliers.
+
+```{r echo=TRUE, warning=FALSE, message=FALSE}
+ggplot(data = brazilcities.sf,  
+       aes(x = log(pop_density), y = gdp_capita)) +
+  geom_point() +
+  geom_smooth(method = lm)
+```
+
+# Choropleth Maps for Coefficient Standard Errors
+
+Coefficient Standard Error measure the reliability of each coefficient estimate. We want the coefficients of standard errors to be small. Large coefficients may mean that there are problems with local collinearity. View here
+
+## Coefficient Standard Error for Average tax
+
+```{r echo=TRUE, warning=FALSE, message=FALSE}
+tm_shape(municipalities) + 
+  tm_borders(alpha=0.5) +
+tm_shape(brazilcities.pol.gwr)+
+  tm_polygons(col = "avg_tax_SE", n=8, style= "jenks")
+```
+
+## Coefficient Standard Error for log Population density
+
+```{r echo=TRUE, warning=FALSE, message=FALSE}
+tm_shape(municipalities) + 
+  tm_borders(alpha=0.5) +
+tm_shape(brazilcities.pol.gwr)+
+  tm_polygons(col = "log.pop_density._SE", n=8, style= "jenks", palette = "Purples")
+```
+
+## Coefficient Standard Error for rural adjacent municipalities
+
+```{r echo=TRUE, warning=FALSE, message=FALSE}
+tm_shape(municipalities) + 
+  tm_borders(alpha=0.5) +
+tm_shape(brazilcities.pol.gwr)+
+  tm_polygons(col = "rural_adjacent_SE", n=8, style= "jenks", palette ="Reds")
+```
+
+## Coefficient Standard Error for Industry Gross Value Added per capita
+
+```{r echo=TRUE, warning=FALSE, message=FALSE}
+tm_shape(municipalities) + 
+  tm_borders(alpha=0.5) +
+tm_shape(brazilcities.pol.gwr)+
+  tm_polygons(col = "industry_percap_SE", n=8, style= "jenks", palette = "Blues")
+```
+
+## Coefficient Standard Error for Services Gross Value Added per capita
+
+```{r echo=TRUE, warning=FALSE, message=FALSE}
+tm_shape(municipalities) + 
+  tm_borders(alpha=0.5) +
+tm_shape(brazilcities.pol.gwr)+
+  tm_polygons(col = "services_percap_SE", n=8, style= "jenks", palette = "Blues")
+```
+
+## Coefficient Standard Error for Public Gross Value Added per capita
+
+```{r echo=TRUE, warning=FALSE, message=FALSE}
+tm_shape(municipalities) + 
+  tm_borders(alpha=0.5) +
+tm_shape(brazilcities.pol.gwr)+
+  tm_polygons(col = "public_percap_SE", n=8, style= "jenks", palette = "Blues")
+```
+
+## Coefficient Standard Error for Agropec Gross Value Added per capita
+
+```{r echo=TRUE, warning=FALSE, message=FALSE}
+tm_shape(municipalities) + 
+  tm_borders(alpha=0.5) +
+tm_shape(brazilcities.pol.gwr)+
+  tm_polygons(col = "agropec_percap_SE", n=8, style= "jenks", palette = "Blues")
+```
+
+## Coefficient Standard Error for Proportion of Planted Area
+
+```{r echo=TRUE, warning=FALSE, message=FALSE}
+tm_shape(municipalities) + 
+  tm_borders(alpha=0.5) +
+tm_shape(brazilcities.pol.gwr)+
+  tm_polygons(col = "planted_prop_SE", n=8, style= "jenks", palette = "Greens")
+```
